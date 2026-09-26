@@ -451,18 +451,66 @@ app.delete('/api/cues/:cueId', (req, res) => {
 
 /* ----------------------------- 音效素材库 ----------------------------- */
 
-/** 素材记录序列化：附带当前被提示引用的次数（不暴露磁盘文件名） */
-function serializeAsset(a) {
-  const refCount = db
+/**
+ * 素材的引用计数：同时统计
+ *  - cue_n：当前音效提示引用（cues.asset_id）；
+ *  - frozen_n：场次冻结条目引用（session_items.asset_id，含补排场——补排场沿用来源快照）。
+ * 任一方仍引用，素材即不允许删除。冻结条目随剧本删除（ON DELETE CASCADE）而清除。
+ */
+function assetRefCounts(assetId) {
+  const cueN = db
     .prepare('SELECT COUNT(*) AS n FROM cues WHERE asset_id = ?')
-    .get(a.id).n;
+    .get(assetId).n;
+  const frozenN = db
+    .prepare('SELECT COUNT(*) AS n FROM session_items WHERE asset_id = ?')
+    .get(assetId).n;
+  return { cue_n: cueN, frozen_n: frozenN, total: cueN + frozenN };
+}
+
+/**
+ * 引用明细（删除冲突时返回，附可定位信息，上限 20 条）：
+ *  - 当前提示：提示内容 + 所属剧本标题 + 行号；
+ *  - 场次冻结条目：场次名 + 剧本标题 + 队列序号 + 行号（标注为「冻结快照」，
+ *    提示当前是否仍关联该素材都不影响——解除当前提示不会释放冻结引用）。
+ */
+function assetReferences(assetId) {
+  const cueRefs = db
+    .prepare(
+      `SELECT 'cue' AS ref_type, c.id AS ref_id, c.label, c.line_no,
+              s.id AS script_id, s.title AS script_title, NULL AS session_id,
+              NULL AS session_name, NULL AS item_seq
+       FROM cues c JOIN scripts s ON s.id = c.script_id
+       WHERE c.asset_id = ?
+       ORDER BY c.id LIMIT 20`
+    )
+    .all(assetId);
+  const frozenRefs = db
+    .prepare(
+      `SELECT 'session_item' AS ref_type, i.id AS ref_id, i.label, i.line_no,
+              s.id AS script_id, s.title AS script_title, se.id AS session_id,
+              se.name AS session_name, i.seq AS item_seq
+       FROM session_items i
+       JOIN sessions se ON se.id = i.session_id
+       JOIN scripts s ON s.id = se.script_id
+       WHERE i.asset_id = ?
+       ORDER BY se.id, i.seq LIMIT 20`
+    )
+    .all(assetId);
+  return [...cueRefs, ...frozenRefs].slice(0, 20);
+}
+
+/** 素材记录序列化：附带当前提示引用数、场次冻结引用数与合计引用数（不暴露磁盘文件名） */
+function serializeAsset(a) {
+  const refs = assetRefCounts(a.id);
   return {
     id: a.id,
     filename: a.filename,
     ext: a.ext,
     size: a.size,
     sha256: a.sha256,
-    ref_count: refCount,
+    ref_count: refs.total,
+    cue_ref_count: refs.cue_n,
+    frozen_ref_count: refs.frozen_n,
     created_at: a.created_at,
   };
 }
@@ -570,28 +618,25 @@ app.get('/api/assets/:id/file', (req, res) => {
 });
 
 /**
- * 删除素材：先检查现存提示引用——被任何音效提示引用时返回 409 冲突
- * （附引用数量与明细），必须先解除全部引用；无引用时同一事务删除记录并清理文件。
+ * 删除素材：引用检查同时覆盖当前提示（cues）与场次冻结条目（session_items，含补排场）——
+ * 任一方仍引用即返回 409 冲突（附两类引用数量与可定位明细：剧本/场次/序号/行号）。
+ * 提示后来解除素材只会减少当前提示引用；冻结条目只能随剧本（级联）删除而清除。
+ * 无任何引用时同一事务删除记录并清理文件。
  */
 app.delete('/api/assets/:id', (req, res) => {
   const asset = getAssetOr404(req.params.id);
 
-  const refCount = db
-    .prepare('SELECT COUNT(*) AS n FROM cues WHERE asset_id = ?')
-    .get(asset.id).n;
-  if (refCount > 0) {
-    const references = db
-      .prepare(
-        `SELECT c.id, c.label, s.title AS script_title
-         FROM cues c JOIN scripts s ON s.id = c.script_id
-         WHERE c.asset_id = ? ORDER BY c.id LIMIT 20`
-      )
-      .all(asset.id);
+  const refs = assetRefCounts(asset.id);
+  if (refs.total > 0) {
     return res.status(409).json({
-      error: `该素材仍被 ${refCount} 条音效提示引用，请先解除全部引用后再删除`,
+      error:
+        `该素材仍被引用（${refs.cue_n} 条当前音效提示、${refs.frozen_n} 条场次冻结条目），` +
+        '请先解除当前提示关联并删除引用它的场次所属剧本后再删除',
       conflict: true,
-      ref_count: refCount,
-      references,
+      ref_count: refs.total,
+      cue_ref_count: refs.cue_n,
+      frozen_ref_count: refs.frozen_n,
+      references: assetReferences(asset.id),
     });
   }
 
@@ -640,13 +685,19 @@ function getSessionOr404(sessionId) {
   return session;
 }
 
-/** 取当前版本已绑定、可执行的提示，按行号、提示 ID 排序 */
+/**
+ * 取当前版本已绑定、可执行的提示，按行号、提示 ID 排序。
+ * 同时 LEFT JOIN sound_assets 取创建场次时要冻结的素材文件名
+ * （素材被引用时无法删除，JOIN 命中即有效；未关联时 asset_* 为 NULL）。
+ */
 function executableCues(scriptId) {
   return db
     .prepare(
-      `SELECT * FROM cues
-       WHERE script_id = ? AND anchor_status = 'bound' AND line_no IS NOT NULL
-       ORDER BY line_no ASC, id ASC`
+      `SELECT c.*, a.filename AS cue_asset_filename
+       FROM cues c
+       LEFT JOIN sound_assets a ON a.id = c.asset_id
+       WHERE c.script_id = ? AND c.anchor_status = 'bound' AND c.line_no IS NOT NULL
+       ORDER BY c.line_no ASC, c.id ASC`
     )
     .all(scriptId);
 }
@@ -666,7 +717,7 @@ function serializeSession(session) {
   const execs = db
     .prepare(
       `SELECT e.id, e.item_id, e.seq, e.kind, e.miss_reason, e.rehearsal_seconds, e.executed_at,
-              i.line_no, i.type, i.label, i.line_text
+              i.line_no, i.type, i.label, i.line_text, i.asset_id, i.asset_filename
        FROM session_executions e
        JOIN session_items i ON i.id = e.item_id
        WHERE e.session_id = ?
@@ -722,8 +773,12 @@ function serializeSession(session) {
     items: items.map((it) => {
       const rec = execByItem.get(it.id);
       const m = makeupByItem.get(it.id);
+      const { asset_id, asset_filename, ...itemRest } = it;
       return {
-        ...it,
+        ...itemRest,
+        // 创建时刻冻结的素材快照：提示后来改绑/解除/删除素材均不影响本场试听；
+        // 无快照（创建时未关联，或旧场次自动补列后仍为 NULL）时 asset 为 null，页面显示「未关联素材」
+        asset: asset_id ? { id: asset_id, filename: asset_filename } : null,
         status: rec ? rec.kind : 'pending', // 'done' | 'missed' | 'pending'
         miss_reason: rec ? rec.miss_reason : null,
         processed_at: rec ? rec.executed_at : null,
@@ -741,7 +796,10 @@ function serializeSession(session) {
           : null,
       };
     }),
-    executions: execs,
+    executions: execs.map(({ asset_id, asset_filename, ...e }) => ({
+      ...e,
+      asset: asset_id ? { id: asset_id, filename: asset_filename } : null,
+    })),
     suggestions,
     makeup_sources: makeupRows,
   };
@@ -793,11 +851,25 @@ app.post('/api/scripts/:id/sessions', (req, res) => {
     const sid = info.lastInsertRowid;
 
     const itemStmt = db.prepare(
-      `INSERT INTO session_items (session_id, seq, cue_id, line_no, type, label, note, line_text)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO session_items (session_id, seq, cue_id, line_no, type, label, note, line_text,
+                                  asset_id, asset_filename)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     cues.forEach((c, i) => {
-      itemStmt.run(sid, i + 1, c.id, c.line_no, c.type, c.label, c.note, c.line_text || '');
+      // 素材快照取自创建时刻提示的关联（asset_id）与素材当前文件名；
+      // 素材被引用时无法删除，故关联存在时 JOIN 必然命中；灯光/未关联音效两列均写 NULL
+      itemStmt.run(
+        sid,
+        i + 1,
+        c.id,
+        c.line_no,
+        c.type,
+        c.label,
+        c.note,
+        c.line_text || '',
+        c.asset_id ?? null,
+        c.asset_id ? c.cue_asset_filename : null
+      );
     });
     return sid;
   })();
@@ -928,7 +1000,8 @@ function makeupCandidates(sessionId) {
     .prepare(
       `SELECT e.id AS execution_id, e.seq AS execution_seq, e.miss_reason,
               i.id AS item_id, i.seq AS item_seq, i.cue_id,
-              i.line_no, i.type, i.label, i.note, i.line_text
+              i.line_no, i.type, i.label, i.note, i.line_text,
+              i.asset_id, i.asset_filename
        FROM session_executions e
        JOIN session_items i ON i.id = e.item_id
        WHERE e.session_id = ? AND e.kind = 'missed'
@@ -1033,8 +1106,9 @@ app.post('/api/sessions/:sessionId/makeup', (req, res) => {
     const sid = info.lastInsertRowid;
 
     const itemStmt = db.prepare(
-      `INSERT INTO session_items (session_id, seq, cue_id, line_no, type, label, note, line_text)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO session_items (session_id, seq, cue_id, line_no, type, label, note, line_text,
+                                  asset_id, asset_filename)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const srcStmt = db.prepare(
       `INSERT INTO session_makeup_sources
@@ -1045,7 +1119,9 @@ app.post('/api/sessions/:sessionId/makeup', (req, res) => {
     );
 
     chosen.forEach((c, i) => {
-      // 按原队列顺序重新编号 seq；冻结字段全部取自来源条目快照与漏执行处理记录
+      // 按原队列顺序重新编号 seq；冻结字段全部取自来源条目快照与漏执行处理记录。
+      // 素材快照同样沿用来源条目的冻结值（c.asset_id / c.asset_filename），
+      // 不再回查 cues 当前关联——提示后来改绑/解除/删除素材不影响补排场试听。
       const r = itemStmt.run(
         sid,
         i + 1,
@@ -1054,7 +1130,9 @@ app.post('/api/sessions/:sessionId/makeup', (req, res) => {
         c.type,
         c.label,
         c.note,
-        c.line_text || ''
+        c.line_text || '',
+        c.asset_id ?? null,
+        c.asset_id ? c.asset_filename : null
       );
       try {
         srcStmt.run(

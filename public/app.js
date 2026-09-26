@@ -73,6 +73,23 @@ async function api(method, url, body) {
 
 const typeName = { light: '灯光', sound: '音效' };
 
+/**
+ * 场次冻结条目的素材快照内部 HTML（队列条目 / 执行记录 / 队首卡片共用）：
+ * - 音效条目且有快照：显示创建时冻结的素材文件名并可试听（播放 /api/assets/:id/file，
+ *   提示后来改绑、解除或删除素材都不影响，播的仍是原素材）；
+ * - 音效条目但无快照：显示「未关联素材」（创建时未关联，或升级前创建的旧场次）；
+ * - 灯光条目不显示。
+ * 调用方自行包一层元素（span / div）。
+ */
+function frozenAssetInner(it) {
+  if (!it || it.type !== 'sound') return '';
+  if (it.asset) {
+    return `🎵 ${escapeHtml(it.asset.filename)}
+      <button class="btn btn-sm" data-action="play-asset" data-asset="${it.asset.id}">▶ 试听</button>`;
+  }
+  return '<span class="frozen-asset-empty">🎵 未关联素材</span>';
+}
+
 /** 文件大小格式化（B / KB / MB） */
 function formatSize(bytes) {
   const n = Number(bytes) || 0;
@@ -877,18 +894,25 @@ function renderAssets() {
     return;
   }
   box.innerHTML = list
-    .map(
-      (a) => `
+    .map((a) => {
+      const cueN = a.cue_ref_count || 0;
+      const frozenN = a.frozen_ref_count || 0;
+      let refText;
+      if (a.ref_count > 0) {
+        const parts = [];
+        if (cueN) parts.push(`当前提示 ${cueN} 条`);
+        if (frozenN) parts.push(`场次冻结条目 ${frozenN} 条`);
+        refText = `<span class="asset-ref">被 ${a.ref_count} 处引用（${parts.join('、')}），不能删除</span>`;
+      } else {
+        refText = '未被引用';
+      }
+      return `
     <div class="asset-item">
       <div class="asset-item-main">
         <div class="asset-name">🎵 ${escapeHtml(a.filename)}</div>
         <div class="asset-meta">
           ${formatSize(a.size)}<span class="sep">·</span>上传于 ${escapeHtml(a.created_at)}
-          <span class="sep">·</span>${
-            a.ref_count > 0
-              ? `<span class="asset-ref">被 ${a.ref_count} 条提示引用</span>`
-              : '未被引用'
-          }
+          <span class="sep">·</span>${refText}
         </div>
       </div>
       <div class="asset-item-actions">
@@ -896,8 +920,8 @@ function renderAssets() {
         <button class="btn btn-sm btn-danger" data-action="delete-asset" data-asset="${a.id}"
                 data-name="${escapeHtml(a.filename)}" data-refs="${a.ref_count}">删除</button>
       </div>
-    </div>`
-    )
+    </div>`;
+    })
     .join('');
   updatePlayButtons();
 }
@@ -959,11 +983,23 @@ async function deleteAsset(btn) {
   } catch (err) {
     if (err.status === 409) {
       const refs2 = (err.data && err.data.references) || [];
+      // 两类引用均给出可定位信息：当前提示 → 剧本/行号；冻结条目 → 剧本/场次/队列序号/行号
       const detail = refs2
         .slice(0, 3)
-        .map((r) => `「${r.label}」@${r.script_title}`)
+        .map((r) =>
+          r.ref_type === 'session_item'
+            ? `冻结「${r.label}」@${r.script_title}/场次「${r.session_name}」#${r.item_seq}`
+            : `提示「${r.label}」@${r.script_title}第${r.line_no || '?'}行`
+        )
         .join('、');
-      toast(detail ? `${err.message}：${detail}${refs2.length > 3 ? ' 等' : ''}` : err.message, true);
+      const summary =
+        err.data && err.data.cue_ref_count != null
+          ? `（当前提示 ${err.data.cue_ref_count} 条 · 冻结条目 ${err.data.frozen_ref_count} 条）`
+          : '';
+      toast(
+        detail ? `${err.message}${summary}：${detail}${refs2.length > 3 ? ' 等' : ''}` : err.message,
+        true
+      );
       loadAssetsTab(); // 引用计数可能已变化，静默刷新
     } else {
       toast(err.message, true);
@@ -1114,6 +1150,11 @@ function renderActiveSession() {
       </div>
       <div class="run-head-line">📖 第 ${head.line_no} 行：${escapeHtml(head.line_text)}</div>
       ${head.note ? `<div class="run-head-note">📝 ${escapeHtml(head.note)}</div>` : ''}
+      ${
+        head.type === 'sound'
+          ? `<div class="run-head-note run-head-asset">${frozenAssetInner(head)}</div>`
+          : ''
+      }
     </div>`
     : `<div class="run-head run-done">🎉 本场次 ${s.total} 条提示已全部处理完毕（已执行 ${s.done_count} · 漏执行 ${s.missed_count}）</div>`;
 
@@ -1206,6 +1247,11 @@ function renderActiveSession() {
             <span class="run-item-actions">
               <button class="btn btn-sm" data-action="suggest" data-item="${it.id}">✏️ 建议</button>
             </span>
+            ${
+              it.type === 'sound'
+                ? `<span class="run-item-note run-item-asset">${frozenAssetInner(it)}</span>`
+                : ''
+            }
             ${it.note ? `<span class="run-item-note">📝 ${escapeHtml(it.note)}</span>` : ''}
             ${msrc && msrc.miss_reason ? `<span class="run-item-note run-item-miss">⚠ 原漏执行原因：${escapeHtml(msrc.miss_reason)}</span>` : ''}
             ${it.status === 'missed' && it.miss_reason ? `<span class="run-item-note run-item-miss">⚠ 本场漏执行原因：${escapeHtml(it.miss_reason)}</span>` : ''}
@@ -1247,6 +1293,11 @@ function renderActiveSession() {
               </span>
               <span class="run-item-label">${escapeHtml(e.label)}</span>
               <span class="run-item-line">第 ${e.line_no} 行</span>
+              ${
+                e.type === 'sound'
+                  ? `<span class="run-log-asset">${frozenAssetInner(e)}</span>`
+                  : ''
+              }
               ${e.kind === 'missed' && e.miss_reason ? `<span class="run-log-reason">⚠ ${escapeHtml(e.miss_reason)}</span>` : ''}
             </div>`
               )
@@ -1263,6 +1314,8 @@ function renderActiveSession() {
   if (originBtn) {
     originBtn.addEventListener('click', () => openRunSession(Number(originBtn.dataset.source)));
   }
+  // 执行/漏执行/撤回会整体重渲染队列：若试听仍在进行，按钮文案需保持「⏸ 停止」
+  updatePlayButtons();
 }
 
 /**
@@ -1344,8 +1397,13 @@ function renderMakeupBox(s) {
   return `${header}
     <div class="makeup-list">
       ${available
-        .map(
-          (c) => `
+        .map((c) => {
+          // 补排预览行是来源冻结条目的原始字段：归一化为 frozenAssetInner 需要的 asset 形状
+          const frozen =
+            c.type === 'sound'
+              ? { type: 'sound', asset: c.asset_id ? { id: c.asset_id, filename: c.asset_filename } : null }
+              : null;
+          return `
         <div class="makeup-item">
           <span class="run-item-idx">原 #${c.item_seq}</span>
           <span class="badge ${c.type === 'light' ? 'badge-light' : 'badge-sound'}">
@@ -1354,9 +1412,14 @@ function renderMakeupBox(s) {
           <span class="run-item-line">第 ${c.line_no} 行</span>
           <span class="run-item-label">${escapeHtml(c.label)}</span>
           ${c.note ? `<span class="makeup-item-note">📝 ${escapeHtml(c.note)}</span>` : ''}
+          ${
+            frozen
+              ? `<span class="makeup-item-note makeup-item-asset">${frozenAssetInner(frozen)}</span>`
+              : ''
+          }
           <span class="makeup-item-note run-item-miss">⚠ 漏执行原因：${escapeHtml(c.miss_reason || '')}</span>
-        </div>`
-        )
+        </div>`;
+        })
         .join('')}
     </div>
     <p class="hint" style="margin:6px 0">

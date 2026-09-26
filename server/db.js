@@ -92,16 +92,22 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 -- 场次条目：冻结提示的行号/类型/内容/备注（及锚点台词文本，便于执行时对照）
 -- cue_id 仅作来源追溯，不与 cues 建外键：提示日后被编辑/删除不影响既有场次
+-- asset_id / asset_filename 为创建时刻该音效提示关联的素材快照：
+-- 不与 sound_assets 建外键（素材删除冲突在应用层同时检查 cues 与本表引用，
+-- 任一方仍引用即拒绝删除，因此快照存在时素材文件不会丢失）；
+-- 提示后来改绑/解除/删除素材，旧场次仍按快照播放原素材。NULL 表示创建时未关联（或旧场次无快照）。
 CREATE TABLE IF NOT EXISTS session_items (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  seq        INTEGER NOT NULL,   -- 队列序号，从 1 开始（按行号、提示 ID 排序）
-  cue_id     INTEGER,
-  line_no    INTEGER NOT NULL,
-  type       TEXT    NOT NULL,
-  label      TEXT    NOT NULL,
-  note       TEXT    NOT NULL DEFAULT '',
-  line_text  TEXT    NOT NULL DEFAULT '',
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id     INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  seq            INTEGER NOT NULL,   -- 队列序号，从 1 开始（按行号、提示 ID 排序）
+  cue_id         INTEGER,
+  line_no        INTEGER NOT NULL,
+  type           TEXT    NOT NULL,
+  label          TEXT    NOT NULL,
+  note           TEXT    NOT NULL DEFAULT '',
+  line_text      TEXT    NOT NULL DEFAULT '',
+  asset_id       INTEGER,            -- 冻结的素材 ID（音效提示；未关联/灯光为 NULL）
+  asset_filename TEXT,               -- 冻结的素材原始文件名（展示用；未关联为 NULL）
   UNIQUE (session_id, seq)
 );
 
@@ -224,6 +230,22 @@ if (!cueCols.includes('asset_id')) {
   db.exec('ALTER TABLE cues ADD COLUMN asset_id INTEGER REFERENCES sound_assets(id)');
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_cues_asset ON cues(asset_id)');
+
+// 兼容旧库：场次冻结条目增加素材快照两列（asset_id / asset_filename）。
+// 旧场次没有素材快照，两列均为 NULL，页面音效条目显示「未关联素材」。
+// 注：不回填历史快照——旧条目创建时关联的素材已无从按「当时状态」还原，
+// 统一以未关联呈现，避免误把提示当前（可能已改绑的）素材当成冻结素材。
+const itemCols = db
+  .prepare('PRAGMA table_info(session_items)')
+  .all()
+  .map((c) => c.name);
+if (!itemCols.includes('asset_id')) {
+  db.exec('ALTER TABLE session_items ADD COLUMN asset_id INTEGER');
+}
+if (!itemCols.includes('asset_filename')) {
+  db.exec('ALTER TABLE session_items ADD COLUMN asset_filename TEXT');
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_session_items_asset ON session_items(asset_id)');
 
 module.exports = db;
 module.exports.DB_PATH = DB_PATH;

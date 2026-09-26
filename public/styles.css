@@ -413,6 +413,14 @@ body {
 .run-head-label { font-weight: 700; font-size: 16px; }
 .run-head-line { color: var(--text-dim); font-size: 13.5px; margin-top: 8px; }
 .run-head-note { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
+/* 队首卡片中的素材快照行（可试听冻结素材） */
+.run-head-asset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--sound-cue);
+}
 .run-done {
   text-align: center;
   color: var(--ok);
@@ -485,6 +493,25 @@ body {
 .run-item-label { font-weight: 600; }
 .run-item-note { color: var(--text-dim); font-size: 12.5px; width: 100%; padding-left: 44px; }
 .run-item-miss { color: var(--danger); }
+
+/* 队列冻结条目中的素材快照行（试听冻结素材 / 未关联素材） */
+.run-item-asset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--sound-cue);
+}
+.makeup-item-asset { color: var(--sound-cue); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.run-log-asset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--sound-cue);
+  font-size: 12.5px;
+}
+.frozen-asset-empty { color: var(--text-dim); }
 
 .run-tag {
   font-size: 11px;
