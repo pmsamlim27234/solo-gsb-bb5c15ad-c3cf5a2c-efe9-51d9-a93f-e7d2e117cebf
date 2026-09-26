@@ -876,3 +876,10 @@ body {
   color: var(--sound-cue);
   flex-wrap: wrap;
 }
+
+/* 场次冻结条目：无素材快照（旧场次）时弱化展示「未关联素材」 */
+.cue-asset-none { color: var(--text-dim); }
+/* 队列条目使用 flex 换行布局：素材行整行展示，与备注对齐 */
+.run-item-asset { width: 100%; padding-left: 44px; margin-top: 0; }
+.run-log-asset { width: 100%; padding-left: 0; margin-top: 2px; }
+.makeup-item-asset { width: 100%; padding-left: 26px; margin-top: 2px; }

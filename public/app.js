@@ -81,6 +81,21 @@ function formatSize(bytes) {
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+/**
+ * 场次冻结条目上的素材行：音效条目有素材快照时显示文件名与「▶ 试听」
+ * （播放的是创建场次时冻结的原素材，提示后来改绑/解除/删除都不影响）；
+ * 旧场次冻结时没有素材快照（asset=null），音效条目显示「未关联素材」。灯光条目不显示。
+ */
+function frozenAssetChip(asset, type, extraClass = '') {
+  if (type !== 'sound') return '';
+  if (!asset) {
+    return `<span class="cue-asset cue-asset-none ${extraClass}">🎵 未关联素材</span>`;
+  }
+  return `<span class="cue-asset ${extraClass}">🎵 ${escapeHtml(asset.filename || `素材 #${asset.id}`)}
+      <button class="btn btn-sm" data-action="play-asset" data-asset="${asset.id}">▶ 试听</button>
+    </span>`;
+}
+
 /* =============================== 素材试听 =============================== */
 
 // 全局单实例播放器：同时只播放一个素材，再次点击同一素材即停止
@@ -886,7 +901,7 @@ function renderAssets() {
           ${formatSize(a.size)}<span class="sep">·</span>上传于 ${escapeHtml(a.created_at)}
           <span class="sep">·</span>${
             a.ref_count > 0
-              ? `<span class="asset-ref">被 ${a.ref_count} 条提示引用</span>`
+              ? `<span class="asset-ref">引用 ${a.ref_count} 处（当前提示 ${a.cue_ref_count || 0} · 场次冻结 ${a.frozen_ref_count || 0}）</span>`
               : '未被引用'
           }
         </div>
@@ -944,7 +959,7 @@ $('assetFileInput').addEventListener('change', async (e) => {
   }
 });
 
-/** 删除素材：被引用时服务端返回 409（附引用明细），解除全部引用后才能删除 */
+/** 删除素材：当前提示或场次冻结任一方仍引用时服务端返回 409（附可定位引用明细） */
 async function deleteAsset(btn) {
   const id = Number(btn.dataset.asset);
   const refs = Number(btn.dataset.refs) || 0;
@@ -958,12 +973,36 @@ async function deleteAsset(btn) {
     await loadAssetsTab();
   } catch (err) {
     if (err.status === 409) {
-      const refs2 = (err.data && err.data.references) || [];
-      const detail = refs2
-        .slice(0, 3)
-        .map((r) => `「${r.label}」@${r.script_title}`)
-        .join('、');
-      toast(detail ? `${err.message}：${detail}${refs2.length > 3 ? ' 等' : ''}` : err.message, true);
+      const d = err.data || {};
+      const cueRefs = d.cue_references || [];
+      const frozenRefs = d.frozen_references || [];
+      const parts = [];
+      // 当前提示引用：剧本 → 提示名
+      if (cueRefs.length) {
+        const detail = cueRefs
+          .slice(0, 3)
+          .map((r) => `「${r.label}」@${r.script_title}`)
+          .join('、');
+        parts.push(
+          `当前提示 ${d.cue_ref_count} 处：${detail}${cueRefs.length > 3 ? ' 等' : ''}（解除关联或删除提示后可删）`
+        );
+      }
+      // 冻结条目引用：剧本 → 场次 → #序号，可据此打开对应剧本的排练执行台定位
+      if (frozenRefs.length) {
+        const detail = frozenRefs
+          .slice(0, 3)
+          .map(
+            (r) =>
+              `#${r.seq}「${r.label}」@${r.script_title}/${r.session_name}${
+                r.session_kind === 'makeup' ? '（补排场）' : ''
+              }`
+          )
+          .join('、');
+        parts.push(
+          `场次冻结 ${d.frozen_ref_count} 处：${detail}${frozenRefs.length > 3 ? ' 等' : ''}（删除对应剧本后引用清除）`
+        );
+      }
+      toast(parts.length ? `${err.message}：${parts.join('；')}` : err.message, true);
       loadAssetsTab(); // 引用计数可能已变化，静默刷新
     } else {
       toast(err.message, true);
@@ -1114,6 +1153,7 @@ function renderActiveSession() {
       </div>
       <div class="run-head-line">📖 第 ${head.line_no} 行：${escapeHtml(head.line_text)}</div>
       ${head.note ? `<div class="run-head-note">📝 ${escapeHtml(head.note)}</div>` : ''}
+      ${head.type === 'sound' ? `<div class="run-head-note">${frozenAssetChip(head.asset, 'sound')}</div>` : ''}
     </div>`
     : `<div class="run-head run-done">🎉 本场次 ${s.total} 条提示已全部处理完毕（已执行 ${s.done_count} · 漏执行 ${s.missed_count}）</div>`;
 
@@ -1207,6 +1247,7 @@ function renderActiveSession() {
               <button class="btn btn-sm" data-action="suggest" data-item="${it.id}">✏️ 建议</button>
             </span>
             ${it.note ? `<span class="run-item-note">📝 ${escapeHtml(it.note)}</span>` : ''}
+            ${frozenAssetChip(it.asset, it.type, 'run-item-asset')}
             ${msrc && msrc.miss_reason ? `<span class="run-item-note run-item-miss">⚠ 原漏执行原因：${escapeHtml(msrc.miss_reason)}</span>` : ''}
             ${it.status === 'missed' && it.miss_reason ? `<span class="run-item-note run-item-miss">⚠ 本场漏执行原因：${escapeHtml(it.miss_reason)}</span>` : ''}
           </div>`;
@@ -1247,6 +1288,14 @@ function renderActiveSession() {
               </span>
               <span class="run-item-label">${escapeHtml(e.label)}</span>
               <span class="run-item-line">第 ${e.line_no} 行</span>
+              ${e.type === 'sound' && e.asset
+                ? `<span class="cue-asset run-log-asset">🎵 ${escapeHtml(e.asset.filename || `素材 #${e.asset.id}`)}
+                    <button class="btn btn-sm" data-action="play-asset" data-asset="${e.asset.id}">▶ 试听</button>
+                  </span>`
+                : ''}
+              ${e.type === 'sound' && !e.asset
+                ? '<span class="cue-asset cue-asset-none run-log-asset">🎵 未关联素材</span>'
+                : ''}
               ${e.kind === 'missed' && e.miss_reason ? `<span class="run-log-reason">⚠ ${escapeHtml(e.miss_reason)}</span>` : ''}
             </div>`
               )
@@ -1263,6 +1312,7 @@ function renderActiveSession() {
   if (originBtn) {
     originBtn.addEventListener('click', () => openRunSession(Number(originBtn.dataset.source)));
   }
+  updatePlayButtons(); // 重渲染后恢复试听按钮的「▶/⏸」状态
 }
 
 /**
@@ -1354,6 +1404,7 @@ function renderMakeupBox(s) {
           <span class="run-item-line">第 ${c.line_no} 行</span>
           <span class="run-item-label">${escapeHtml(c.label)}</span>
           ${c.note ? `<span class="makeup-item-note">📝 ${escapeHtml(c.note)}</span>` : ''}
+          ${frozenAssetChip(c.asset, c.type, 'makeup-item-asset')}
           <span class="makeup-item-note run-item-miss">⚠ 漏执行原因：${escapeHtml(c.miss_reason || '')}</span>
         </div>`
         )

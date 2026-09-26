@@ -92,16 +92,22 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 -- 场次条目：冻结提示的行号/类型/内容/备注（及锚点台词文本，便于执行时对照）
 -- cue_id 仅作来源追溯，不与 cues 建外键：提示日后被编辑/删除不影响既有场次
+-- asset_id / asset_filename 为创建时刻关联素材的「素材快照」：之后提示改绑、解除或删除素材关联，
+-- 旧场次仍播放原素材。asset_id 以普通 REFERENCES 引用素材（无级联）：只要仍被冻结条目引用，
+-- 素材记录与文件就无法删除（应用层删除冲突同时统计当前提示与冻结条目）。
+-- 旧场次没有快照时两列为 NULL / ''，页面音效条目显示「未关联素材」。
 CREATE TABLE IF NOT EXISTS session_items (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  seq        INTEGER NOT NULL,   -- 队列序号，从 1 开始（按行号、提示 ID 排序）
-  cue_id     INTEGER,
-  line_no    INTEGER NOT NULL,
-  type       TEXT    NOT NULL,
-  label      TEXT    NOT NULL,
-  note       TEXT    NOT NULL DEFAULT '',
-  line_text  TEXT    NOT NULL DEFAULT '',
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id     INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  seq            INTEGER NOT NULL,   -- 队列序号，从 1 开始（按行号、提示 ID 排序）
+  cue_id         INTEGER,
+  line_no        INTEGER NOT NULL,
+  type           TEXT    NOT NULL,
+  label          TEXT    NOT NULL,
+  note           TEXT    NOT NULL DEFAULT '',
+  line_text      TEXT    NOT NULL DEFAULT '',
+  asset_id       INTEGER REFERENCES sound_assets(id), -- 创建时关联素材的冻结快照（可空）
+  asset_filename TEXT    NOT NULL DEFAULT '',         -- 创建时素材文件名快照（展示用）
   UNIQUE (session_id, seq)
 );
 
@@ -160,6 +166,10 @@ CREATE TABLE IF NOT EXISTS session_makeup_sources (
   original_label       TEXT    NOT NULL,          -- 冻结的来源提示内容
   original_note        TEXT    NOT NULL DEFAULT '', -- 冻结的来源备注
   original_line_text   TEXT    NOT NULL DEFAULT '', -- 冻结的来源锚点台词
+  -- 素材快照同样从来源冻结条目沿用（补排场不再查询当前提示的关联）；
+  -- 仅作来源追溯，素材引用计数/删除冲突以新场次 session_items 的快照为准
+  original_asset_id       INTEGER,
+  original_asset_filename TEXT    NOT NULL DEFAULT '',
   miss_reason          TEXT    NOT NULL,          -- 冻结的漏执行原因
   created_at           TEXT    NOT NULL DEFAULT (datetime('now')),
   UNIQUE (session_id, item_id),
@@ -224,6 +234,32 @@ if (!cueCols.includes('asset_id')) {
   db.exec('ALTER TABLE cues ADD COLUMN asset_id INTEGER REFERENCES sound_assets(id)');
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_cues_asset ON cues(asset_id)');
+
+// 兼容旧库：session_items 增加素材快照两列（旧场次冻结时没有素材快照，
+// 保持 NULL / ''，场次详情中的音效条目显示「未关联素材」）
+const itemCols = db
+  .prepare('PRAGMA table_info(session_items)')
+  .all()
+  .map((c) => c.name);
+if (!itemCols.includes('asset_id')) {
+  db.exec('ALTER TABLE session_items ADD COLUMN asset_id INTEGER REFERENCES sound_assets(id)');
+}
+if (!itemCols.includes('asset_filename')) {
+  db.exec("ALTER TABLE session_items ADD COLUMN asset_filename TEXT NOT NULL DEFAULT ''");
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_session_items_asset ON session_items(asset_id)');
+
+// 兼容旧库：session_makeup_sources 增加补排来源素材快照两列（旧补排场没有素材快照）
+const makeupCols = db
+  .prepare('PRAGMA table_info(session_makeup_sources)')
+  .all()
+  .map((c) => c.name);
+if (!makeupCols.includes('original_asset_id')) {
+  db.exec('ALTER TABLE session_makeup_sources ADD COLUMN original_asset_id INTEGER');
+}
+if (!makeupCols.includes('original_asset_filename')) {
+  db.exec("ALTER TABLE session_makeup_sources ADD COLUMN original_asset_filename TEXT NOT NULL DEFAULT ''");
+}
 
 module.exports = db;
 module.exports.DB_PATH = DB_PATH;
