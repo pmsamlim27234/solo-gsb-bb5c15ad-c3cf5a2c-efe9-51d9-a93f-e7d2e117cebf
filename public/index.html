@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>台词提示单 · 剧团排练工具</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand" id="homeBtn" title="返回剧本列表">
+      <span class="brand-mark">🎭</span>
+      <span>台词提示单</span>
+    </div>
+    <div class="topbar-sub" id="topbarSub">灯光 / 音效提示管理</div>
+  </header>
+
+  <!-- 剧本列表视图 -->
+  <main id="listView" class="view">
+    <section class="panel create-panel">
+      <h2>新建剧本</h2>
+      <p class="hint">粘贴分场剧本文本，保存后可以在任意台词旁添加灯光或音效提示。</p>
+      <input id="newTitle" class="input" type="text" placeholder="剧本标题，如：雷雨（第三幕）" />
+      <textarea id="newContent" class="textarea" rows="8" placeholder="在此粘贴剧本文本，每行一句台词或舞台提示……"></textarea>
+      <button class="btn btn-primary" id="createBtn">创建剧本</button>
+    </section>
+
+    <section class="panel">
+      <h2>剧本列表</h2>
+      <div id="scriptList" class="script-list"></div>
+    </section>
+  </main>
+
+  <!-- 剧本详情视图 -->
+  <main id="detailView" class="view hidden">
+    <div class="detail-head">
+      <button class="btn btn-ghost" id="backBtn">← 返回列表</button>
+      <h2 id="detailTitle" class="detail-title"></h2>
+      <span id="versionBadge" class="badge badge-version"></span>
+      <div class="detail-actions">
+        <button class="btn" id="renameBtn">改标题</button>
+        <button class="btn btn-warn hidden" id="editBtn">编辑剧本（保存新版）</button>
+        <button class="btn btn-primary hidden" id="saveVersionBtn">保存新版</button>
+        <button class="btn hidden" id="cancelEditBtn">取消</button>
+      </div>
+    </div>
+
+    <div class="tab-bar">
+      <button class="tab-btn active" id="tabCueBtn">🎬 剧本与提示单</button>
+      <button class="tab-btn" id="tabRunBtn">🗂️ 排练执行台</button>
+      <button class="tab-btn" id="tabVersionsBtn">🕘 版本回溯</button>
+      <button class="tab-btn" id="tabAssetsBtn">🔊 音效素材库</button>
+    </div>
+
+    <div id="cueTab">
+      <div class="detail-grid">
+        <!-- 左：剧本 -->
+        <section class="panel script-panel">
+          <div class="panel-head">
+            <h3 id="scriptPanelTitle">剧本</h3>
+            <span class="hint" id="scriptModeHint">点击任意台词行，可在旁边添加提示</span>
+          </div>
+
+          <div id="scriptViewer" class="script-viewer"></div>
+          <textarea id="scriptEditor" class="textarea script-editor hidden" rows="24"></textarea>
+        </section>
+
+        <!-- 右：提示单 -->
+        <section class="panel cues-panel">
+          <div class="panel-head">
+            <h3>提示单</h3>
+            <div id="cueStats" class="cue-stats"></div>
+          </div>
+          <div id="pendingPanel" class="pending-panel hidden"></div>
+          <div id="cueList" class="cue-list"></div>
+        </section>
+      </div>
+    </div>
+
+    <!-- 排练执行台 -->
+    <div id="runTab" class="hidden">
+      <div class="detail-grid run-grid">
+        <!-- 左：创建场次 + 当前场次执行 -->
+        <section class="panel">
+          <div class="panel-head">
+            <h3>创建排练场次</h3>
+          </div>
+          <div id="runCreateBox" class="run-create-box">
+            <div id="runPreview" class="hint">正在读取当前版本提示…</div>
+            <div class="run-create-form">
+              <input id="runName" class="input" type="text" placeholder="场次名称（可选，默认「剧名 · 第N版排练」）" />
+              <button class="btn btn-primary" id="runCreateBtn">从当前版本创建场次</button>
+            </div>
+          </div>
+
+          <div id="activeSessionBox" class="run-active-box"></div>
+        </section>
+
+        <!-- 右：历次场次 -->
+        <section class="panel">
+          <div class="panel-head">
+            <h3>历次场次</h3>
+            <span class="hint">快照与执行记录永久保留，剧本改版不影响旧场次</span>
+          </div>
+          <div id="sessionHistory" class="session-history"></div>
+        </section>
+      </div>
+
+      <!-- 场次对照：同一剧本任选两场，按来源提示 ID 对齐（只读视图） -->
+      <section class="panel cmp-panel">
+        <div class="panel-head">
+          <h3>🔀 场次对照</h3>
+          <span class="hint">按冻结条目的来源提示 ID 对齐两场；对照为只读视图，不会改动任何场次或提示</span>
+        </div>
+        <div class="cmp-controls">
+          <label class="cmp-field">
+            <span class="cmp-field-label">基准场</span>
+            <select id="cmpBase" class="input cmp-select"></select>
+          </label>
+          <label class="cmp-field">
+            <span class="cmp-field-label">对照场</span>
+            <select id="cmpCompare" class="input cmp-select"></select>
+          </label>
+          <button class="btn btn-primary" id="cmpRunBtn">对照</button>
+          <label class="cmp-toggle">
+            <input type="checkbox" id="cmpExpand" /> 展开未变化项
+          </label>
+        </div>
+        <div id="cmpResult" class="cmp-result">
+          <div class="empty">至少需要两场历史场次才能对照；从上方选择基准场与对照场后点击「对照」。</div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 音效素材库 -->
+    <div id="assetsTab" class="hidden">
+      <section class="panel">
+        <div class="panel-head">
+          <h3>🔊 音效素材库</h3>
+          <span class="hint">素材为本机全剧目共用；按文件内容（SHA-256）去重，同一内容重复上传会复用原素材</span>
+        </div>
+        <div class="asset-upload-box">
+          <input type="file" id="assetFileInput" class="hidden"
+                 accept=".mp3,.wav,.ogg,audio/mpeg,audio/wav,audio/ogg" />
+          <button class="btn btn-primary" id="assetPickBtn">选择音频文件上传</button>
+          <span class="hint" id="assetUploadHint">支持 MP3 / WAV / OGG，单个文件不超过 10 MB</span>
+        </div>
+        <div id="assetList" class="asset-list"></div>
+      </section>
+    </div>
+
+    <!-- 剧本版本回溯 -->
+    <div id="versionsTab" class="hidden">
+      <div class="detail-grid versions-grid">
+        <!-- 左：历史版本列表 -->
+        <section class="panel">
+          <div class="panel-head">
+            <h3>历史版本</h3>
+            <span class="hint">每次保存新版都会留下不可变全文快照</span>
+          </div>
+          <div id="versionList" class="version-list">
+            <div class="empty">正在读取历史版本…</div>
+          </div>
+        </section>
+
+        <!-- 右：版本正文与恢复预览 -->
+        <section class="panel">
+          <div class="panel-head">
+            <h3 id="versionViewerTitle">版本正文</h3>
+            <span class="hint" id="versionViewerMeta"></span>
+          </div>
+          <div id="versionContent" class="script-viewer version-viewer">
+            <div class="empty">点击左侧任一历史版本查看该版正文。</div>
+          </div>
+          <div id="restoreBox" class="restore-box hidden"></div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <!-- 添加/编辑提示弹窗 -->
+  <div id="cueModal" class="modal-mask hidden">
+    <div class="modal">
+      <h3 id="cueModalTitle">添加提示</h3>
+      <div class="modal-line" id="cueModalLine"></div>
+      <label class="field-label">提示类型</label>
+      <div class="type-switch">
+        <label><input type="radio" name="cueType" value="light" checked /> 💡 灯光</label>
+        <label><input type="radio" name="cueType" value="sound" /> 🔊 音效</label>
+      </div>
+      <label class="field-label">提示内容</label>
+      <input id="cueLabel" class="input" type="text" placeholder="如：聚光灯打向周朴园 / 雷声渐起" />
+      <label class="field-label">备注（可选）</label>
+      <textarea id="cueNote" class="textarea" rows="2" placeholder="执行细节、时长、通道等"></textarea>
+      <div id="cueAssetRow" class="hidden">
+        <label class="field-label">关联音效素材（可选）</label>
+        <div class="asset-select-row">
+          <select id="cueAssetSelect" class="input"></select>
+          <button type="button" class="btn btn-sm" id="cueAssetPlayBtn" disabled>▶ 试听</button>
+        </div>
+        <p class="hint asset-modal-hint">素材在「🔊 音效素材库」标签页上传与管理；保存后可在提示单中试听。</p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="cueCancelBtn">取消</button>
+        <button class="btn btn-primary" id="cueSaveBtn">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 重新绑定弹窗 -->
+  <div id="rebindModal" class="modal-mask hidden">
+    <div class="modal modal-lg">
+      <h3>重新绑定台词</h3>
+      <div id="rebindCueInfo" class="rebind-cue-info"></div>
+      <p class="hint" id="rebindReason"></p>
+      <div id="rebindCandidates" class="rebind-candidates"></div>
+      <label class="field-label">或在下面剧本中点选正确的台词行</label>
+      <div id="rebindViewer" class="script-viewer rebind-viewer"></div>
+      <div class="modal-actions">
+        <button class="btn" id="rebindCancelBtn">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 修订建议弹窗（针对冻结的场次条目） -->
+  <div id="suggestModal" class="modal-mask hidden">
+    <div class="modal">
+      <h3 id="suggestModalTitle">填写修订建议</h3>
+      <div class="modal-line" id="suggestItemInfo"></div>
+      <p class="hint" id="suggestModalHint">
+        建议保存在场次下，采纳时系统会核对来源提示未被改动，通过后才会写回当前提示。
+      </p>
+      <label class="field-label">建议的提示内容</label>
+      <input id="suggestLabel" class="input" type="text" placeholder="如：聚光灯提前 2 秒亮起" />
+      <label class="field-label">建议的备注（可选）</label>
+      <textarea id="suggestNote" class="textarea" rows="2" placeholder="执行细节、时长、通道等"></textarea>
+      <div class="modal-actions">
+        <button class="btn" id="suggestCancelBtn">取消</button>
+        <button class="btn btn-primary" id="suggestSaveBtn">保存建议</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 漏执行登记弹窗（针对队首条目） -->
+  <div id="missModal" class="modal-mask hidden">
+    <div class="modal">
+      <h3>登记漏执行</h3>
+      <div class="modal-line" id="missItemInfo"></div>
+      <p class="hint">
+        该条目将被标记为「漏执行」并继续处理下一条；原因随场次记录保留，可在队列与执行记录中查看。
+      </p>
+      <label class="field-label">漏执行原因（必填）</label>
+      <textarea id="missReason" class="textarea" rows="3" placeholder="如：演员漏词跳过该提示 / 设备未就绪，本次不触发"></textarea>
+      <div class="modal-actions">
+        <button class="btn" id="missCancelBtn">取消</button>
+        <button class="btn btn-warn" id="missSaveBtn">确认登记漏执行</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

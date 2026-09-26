@@ -1,0 +1,14 @@
+{
+  "name": "line-cue-sheet",
+  "version": "1.0.0",
+  "description": "小剧团排练用的台词提示单（灯光/音效 Cue 管理）",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "init-db": "node server/init-db.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "express": "^4.21.2"
+  }
+}
